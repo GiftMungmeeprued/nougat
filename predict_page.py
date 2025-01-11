@@ -4,6 +4,7 @@ Copyright (c) Meta Platforms, Inc. and affiliates.
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
+
 import sys
 from pathlib import Path
 import logging
@@ -21,6 +22,7 @@ from nougat.utils.device import move_to_device, default_batch_size
 from nougat.utils.checkpoint import get_checkpoint
 from nougat.postprocessing import markdown_compatible
 import pypdf
+import time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -45,7 +47,7 @@ def get_args():
         "--model",
         "-m",
         type=str,
-        default="0.1.0-small",
+        default="0.1.0-base",
         help=f"Model tag to use.",
     )
     parser.add_argument("--out", "-o", type=Path, help="Output directory.")
@@ -158,6 +160,8 @@ def main():
         batch_size=args.batchsize,
         shuffle=False,
         collate_fn=LazyDataset.ignore_none_collate,
+        num_workers=1,
+        prefetch_factor=2,
     )
 
     predictions = []
@@ -181,34 +185,39 @@ def main():
             elif args.skipping and model_output["repeats"][j] is not None:
                 if model_output["repeats"][j] > 0:
                     # If we end up here, it means the output is most likely not complete and was truncated.
-                    logging.warning(f"Skipping page {page_num} due to repetitions.")
+                    # logging.warning(f"Skipping page {page_num} due to repetitions.")
                     predictions.append(f"")
                 else:
                     # If we end up here, it means the document page is too different from the training domain.
                     # This can happen e.g. for cover pages.
-                    predictions.append(
-                        f""
-                    )
+                    predictions.append(f"")
             else:
                 if args.markdown:
                     output = markdown_compatible(output)
                 predictions.append(output)
-                
+
             if args.out:
                 out = "".join(predictions).strip()
                 out = re.sub(r"\n{3,}", "\n\n", out).strip()
-                out_path = args.out / Path(datasets[file_index].name).stem / Path(f"p{page_num:04}").with_suffix(".mmd").name
+                out_path = (
+                    args.out
+                    / Path(datasets[file_index].name).stem
+                    / Path(f"p{page_num:04}").with_suffix(".mmd").name
+                )
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(out, encoding="utf-8")
             else:
                 print(out, "\n\n")
-            
+
             predictions = []
 
             if is_last_page[j]:
                 page_num = 0
                 file_index += 1
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
+    start = time.time()
     main()
+    print("Time taken: ", time.time() - start, "s")
