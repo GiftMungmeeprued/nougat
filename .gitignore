@@ -1,3 +1,6 @@
+# output from model
+output/
+
 core.*
 *.bin
 .nfs*
