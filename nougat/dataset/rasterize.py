@@ -4,6 +4,7 @@ Copyright (c) Meta Platforms, Inc. and affiliates.
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
+
 import argparse
 import logging
 import pypdfium2
@@ -11,6 +12,8 @@ from pathlib import Path
 from tqdm import tqdm
 import io
 from typing import Optional, List, Union
+import pypdfium2.raw as pdfium_c
+import pdf2image
 
 logging.getLogger("pypdfium2").setLevel(logging.WARNING)
 
@@ -39,22 +42,26 @@ def rasterize_paper(
     if outpath is None:
         return_pil = True
     try:
-        if isinstance(pdf, (str, Path)):
-            pdf = pypdfium2.PdfDocument(pdf)
-        if pages is None:
-            pages = range(len(pdf))
-        renderer = pdf.render(
-            pypdfium2.PdfBitmap.to_pil,
-            page_indices=pages,
-            scale=dpi / 72,
-        )
-        for i, image in zip(pages, renderer):
+        # if isinstance(pdf, (str, Path)):
+        #     pdf = pypdfium2.PdfDocument(pdf)
+        # if pages is None:
+        #     pages = range(len(pdf))
+        # renderer = pdf.render(
+        #     pypdfium2.PdfBitmap.to_pil,
+        #     page_indices=pages,
+        #     scale=dpi / 72,
+        # )
+        # print(pdf[0].render(scale=dpi / 72).to_pil())
+        renderer = pdf2image.convert_from_path(pdf, dpi=dpi)
+        # for i, image in zip(pages, renderer):
+        for i, image in enumerate(renderer):
             if return_pil:
                 page_bytes = io.BytesIO()
                 image.save(page_bytes, "bmp")
                 pils.append(page_bytes)
             else:
                 image.save((outpath / ("%02d.png" % (i + 1))), "png")
+        # pdfium_c.FPDF_CloseDocument(pdf)
     except Exception as e:
         logging.error(e)
     if return_pil:
