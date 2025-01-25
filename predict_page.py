@@ -11,20 +11,17 @@ import logging
 import re
 import argparse
 import re
-import os
 from functools import partial
 import torch
-from torch.utils.data import ConcatDataset
 from tqdm import tqdm
 from nougat import NougatModel
-from nougat.utils.dataset import LazyDataset
+from nougat.utils.dataset import LazyImageDataset
 from nougat.utils.device import move_to_device, default_batch_size
 from nougat.utils.checkpoint import get_checkpoint
 from nougat.postprocessing import markdown_compatible
-import pypdf
 import time
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARN)
 
 
 def get_args():
@@ -78,13 +75,7 @@ def get_args():
         action="store_false",
         help="Don't apply failure detection heuristic.",
     )
-    parser.add_argument(
-        "--pages",
-        "-p",
-        type=str,
-        help="Provide page numbers like '1-4,7' for pages 1 through 4 and page 7. Only works for single PDF input.",
-    )
-    parser.add_argument("pdf", nargs="+", type=Path, help="PDF(s) to process.")
+    parser.add_argument("input", type=Path, help="Path to PNGs to process.")
     args = parser.parse_args()
     if args.checkpoint is None or not args.checkpoint.exists():
         args.checkpoint = get_checkpoint(args.checkpoint, model_tag=args.model)
@@ -97,30 +88,11 @@ def get_args():
         if not args.out.is_dir():
             logging.error("Output has to be directory.")
             sys.exit(1)
-    if len(args.pdf) == 1 and not args.pdf[0].suffix == ".pdf":
-        # input is a list of pdfs
-        try:
-            pdfs_path = args.pdf[0]
-            if pdfs_path.is_dir():
-                args.pdf = list(pdfs_path.rglob("*.pdf"))
-            else:
-                args.pdf = [
-                    Path(l) for l in open(pdfs_path).read().split("\n") if len(l) > 0
-                ]
-            logging.info(f"Found {len(args.pdf)} files.")
-        except:
-            pass
-    if args.pages and len(args.pdf) == 1:
-        pages = []
-        for p in args.pages.split(","):
-            if "-" in p:
-                start, end = p.split("-")
-                pages.extend(range(int(start) - 1, int(end)))
-            else:
-                pages.append(int(p) - 1)
-        args.pages = pages
-    else:
-        args.pages = None
+    if not args.input.exists():
+        logging.error("Input directory does not exist.")
+        sys.exit(1)
+
+    logging.info(f"Found {len(list(args.input.glob('*')))} books")
     return args
 
 
@@ -132,53 +104,39 @@ def main():
         # set batch size to 1. Need to check if there are benefits for CPU conversion for >1
         args.batchsize = 1
     model.eval()
-    datasets = []
-    for pdf in args.pdf:
-        if not pdf.exists():
-            continue
+    png_paths = []
+    for png_path in args.input.glob("*/*.png"):
         if args.out:
-            out_path = args.out / pdf.with_suffix(".mmd").name
+            out_path = (
+                args.out / png_path.parent.stem / png_path.with_suffix(".mmd").name
+            )
             if out_path.exists() and not args.recompute:
                 logging.info(
-                    f"Skipping {pdf.name}, already computed. Run with --recompute to convert again."
+                    f"Skipping {str(out_path)}, already computed. Run with --recompute to convert again."
                 )
-                continue
-        try:
-            dataset = LazyDataset(
-                pdf,
-                partial(model.encoder.prepare_input, random_padding=False),
-                args.pages,
-            )
-        except pypdf.errors.PdfStreamError:
-            logging.info(f"Could not load file {str(pdf)}.")
-            continue
-        datasets.append(dataset)
-    if len(datasets) == 0:
+            else:
+                png_paths.append(png_path)
+    dataset = LazyImageDataset(
+        png_paths, partial(model.encoder.prepare_input, random_padding=False)
+    )
+    if len(dataset) == 0:
         return
     dataloader = torch.utils.data.DataLoader(
-        ConcatDataset(datasets),
+        dataset,
         batch_size=args.batchsize,
         shuffle=False,
-        collate_fn=LazyDataset.ignore_none_collate,
+        collate_fn=LazyImageDataset.ignore_none_collate,
         num_workers=1,
         prefetch_factor=2,
     )
 
     predictions = []
-    file_index = 0
-    page_num = 0
-    for i, (sample, is_last_page) in enumerate(tqdm(dataloader)):
+    for i, (sample, file_paths) in enumerate(tqdm(dataloader)):
         model_output = model.inference(
             image_tensors=sample, early_stopping=args.skipping
         )
         # check if model output is faulty
         for j, output in enumerate(model_output["predictions"]):
-            if page_num == 0:
-                logging.info(
-                    "Processing file %s with %i pages"
-                    % (datasets[file_index].name, datasets[file_index].size)
-                )
-            page_num += 1
             if output.strip() == "[MISSING_PAGE_POST]":
                 # uncaught repetitions -- most likely empty page
                 predictions.append(f"")
@@ -199,10 +157,11 @@ def main():
             if args.out:
                 out = "".join(predictions).strip()
                 out = re.sub(r"\n{3,}", "\n\n", out).strip()
+                file_path = Path(file_paths[j])
                 out_path = (
                     args.out
-                    / Path(datasets[file_index].name).stem
-                    / Path(f"p{page_num:04}").with_suffix(".mmd").name
+                    / file_path.parent.stem
+                    / file_path.with_suffix(".mmd").name
                 )
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(out, encoding="utf-8")
@@ -210,10 +169,6 @@ def main():
                 print(out, "\n\n")
 
             predictions = []
-
-            if is_last_page[j]:
-                page_num = 0
-                file_index += 1
         torch.cuda.empty_cache()
 
 
