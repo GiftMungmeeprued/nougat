@@ -107,9 +107,7 @@ def main():
     png_paths = []
     for png_path in args.input.glob("*/*.png"):
         if args.out:
-            out_path = (
-                args.out / png_path.parent.stem / png_path.with_suffix(".mmd").name
-            )
+            out_path = args.out / png_path.parent / png_path.with_suffix(".mmd").name
             if out_path.exists() and not args.recompute:
                 logging.info(
                     f"Skipping {str(out_path)}, already computed. Run with --recompute to convert again."
